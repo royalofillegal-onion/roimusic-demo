@@ -1,0 +1,288 @@
+import { useMemo, useState, useEffect, useRef } from "react";
+import { Search, X, Play, ChevronRight, Bell, Settings, MoreHorizontal, Disc3 } from "lucide-react";
+import { uniqueSongs } from "@/data/allSongs";
+import { usePlayer } from "@/context/PlayerContext";
+import { cn } from "@/lib/utils";
+import type { Song } from "@/data/Song";
+
+type SearchCategory = "Top Results" | "Artists" | "Albums" | "Songs";
+
+const RECENT_SEARCHES_KEY = "roi.recentSearches.v1";
+const MAX_RECENT_SEARCHES = 8;
+
+export function SearchView({ onClose, cloudSongs = [] }: { onClose: () => void; cloudSongs?: Song[] }) {
+  const { playSong, currentSong } = usePlayer();
+  const [q, setQ] = useState("");
+  const [category, setCategory] = useState<SearchCategory>("Top Results");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [recentQueries, setRecentQueries] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_SEARCHES_KEY) ?? "[]");
+      return Array.isArray(raw) ? raw.filter((t) => typeof t === "string" && t.trim()) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const saveRecent = (term: string) => {
+    const t = term.trim();
+    if (!t) return;
+    setRecentQueries((prev) => {
+      const next = [t, ...prev.filter((p) => p.toLowerCase() !== t.toLowerCase())].slice(0, 8);
+      try {
+        localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next));
+      } catch {
+        // storage unavailable — recent searches stay in-memory for this session
+      }
+      return next;
+    });
+  };
+
+  const clearRecent = () => {
+    setRecentQueries([]);
+    try {
+      localStorage.removeItem(RECENT_SEARCHES_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const selectSong = (song: Song) => {
+    if (q.trim()) saveRecent(q);
+    inputRef.current?.blur();
+    playSong(song);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Desktop convenience: "/" focuses the field. Never auto-focus on load,
+      // so mobile browsers don't pop the keyboard open by themselves.
+      if (e.key === "/" && document.activeElement !== inputRef.current) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const catalog = useMemo(() => {
+    return [...cloudSongs, ...uniqueSongs].filter((song, index, list) => list.findIndex((item) => item.id === song.id) === index);
+  }, [cloudSongs]);
+
+  // Results are ranked, not just filtered: a title that starts with the query
+  // beats one that merely mentions it, so the best match is always on top.
+  const results = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return catalog.slice(0, 30);
+    const searchable = (s: Song) =>
+      [
+        s.title,
+        s.singer,
+        s.artist,
+        s.album,
+        s.genre,
+        s.language,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+    const score = (s: Song) => {
+      const title = (s.title ?? "").toLowerCase();
+      const artist = ((s.singer || s.artist) ?? "").toLowerCase();
+      let value = 0;
+      if (title.startsWith(term)) value += 6;
+      else if (title.includes(term)) value += 4;
+      if (artist.startsWith(term)) value += 3;
+      else if (artist.includes(term)) value += 2;
+      if ((s.album ?? "").toLowerCase().includes(term)) value += 1;
+      if ((s.genre ?? "").toLowerCase().includes(term) || (s.language ?? "").toLowerCase().includes(term)) value += 0.5;
+      return value;
+    };
+    return catalog
+      .filter((s) => searchable(s).includes(term))
+      .map((s) => ({ s, score: score(s) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 80)
+      .map((entry) => entry.s);
+  }, [q, catalog]);
+
+  const artists = useMemo(() => {
+    const seen = new Set<string>();
+    return results.filter((song) => {
+      const key = (song.singer || song.artist).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [results]);
+
+  const albums = useMemo(() => {
+    const seen = new Set<string>();
+    return results.filter((song) => {
+      if (!song.album) return false;
+      const key = `${song.album.toLowerCase()}-${(song.singer || song.artist).toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [results]);
+
+  const tabs: SearchCategory[] = ["Top Results", "Artists", "Albums", "Songs"];
+  const visibleSongs = category === "Artists" ? artists : category === "Albums" ? albums : results;
+
+  return (
+    <div
+      className="fixed inset-0 z-30 overflow-y-auto text-white animate-in fade-in slide-in-from-bottom-4 duration-200"
+      style={{
+        background: "radial-gradient(110% 70% at 50% -12%, #17313a 0%, #0b1a20 48%, #071219 100%)",
+      }}
+    >
+      <div className="mx-auto max-w-[640px] px-5 pt-9 pb-36">
+        <header className="mb-4 flex items-center justify-between">
+          <h1 className="text-[22px] font-semibold tracking-tight">Search</h1>
+          <div className="flex items-center gap-3 text-white/90">
+            <button aria-label="Notifications" className="rounded-full p-1.5 transition hover:bg-white/10"><Bell className="h-5 w-5" /></button>
+            <button aria-label="Settings" className="rounded-full p-1.5 transition hover:bg-white/10"><Settings className="h-5 w-5" /></button>
+          </div>
+        </header>
+
+        <div className="flex items-center gap-2 rounded-xl border border-white/60 bg-[#0a1920]/90 px-3 py-2.5 shadow-[0_8px_24px_rgba(0,0,0,0.16)]">
+          <Search className="h-[18px] w-[18px] shrink-0 text-white/75" />
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  saveRecent(q);
+                  inputRef.current?.blur();
+                }
+              }}
+              enterKeyHint="search"
+              autoComplete="off"
+              placeholder="Search songs, artists, albums..."
+              className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-white/55"
+            />
+            {q && (
+              <button
+                aria-label="Clear"
+                onClick={() => setQ("")}
+                className="grid h-7 w-7 place-items-center rounded-full bg-white/10 hover:bg-white/20"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+        </div>
+
+        <div className="-mx-5 mt-4 flex gap-1.5 overflow-x-auto px-5 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Search categories">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={category === tab}
+              onClick={() => setCategory(tab)}
+              className={cn(
+                "shrink-0 rounded-full px-3.5 py-1.5 text-[13px] transition-colors",
+                category === tab ? "bg-[#f4c327] font-semibold text-[#132027]" : "text-white/80 hover:bg-white/10"
+              )}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {!q && recentQueries.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Recent searches">
+            {recentQueries.map((term) => (
+              <button
+                key={term}
+                type="button"
+                onClick={() => setQ(term)}
+                className="flex items-center gap-1.5 rounded-full bg-white/[0.07] px-3 py-1.5 text-[12px] text-white/85 transition-colors hover:bg-white/[0.14]"
+              >
+                <Search className="h-3 w-3 text-white/55" />
+                {term}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={clearRecent}
+              className="rounded-full px-2.5 py-1.5 text-[12px] text-[#f4c327]/80 transition-colors hover:text-[#f4c327]"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center justify-between">
+          <h2 className="text-[14px] font-medium text-white/90">{q ? "Search results" : recentQueries.length ? "Recent searches" : category === "Top Results" ? "Suggested for you" : category}</h2>
+          {q && <span className="text-xs text-white/50">{visibleSongs.length} found</span>}
+        </div>
+
+        <ul className="mt-2 space-y-0.5">
+          {visibleSongs.map((song) => {
+            const playing = currentSong?.id === song.id;
+            const isArtist = category === "Artists";
+            const isAlbum = category === "Albums";
+            return (
+              <li
+                key={song.id}
+                onClick={() => selectSong(song)}
+                className={cn(
+                  "group flex cursor-pointer items-center gap-3 rounded-xl px-1 py-2 transition-colors",
+                  playing
+                    ? "bg-[#f4c327]/10"
+                    : "hover:bg-white/[0.06]"
+                )}
+              >
+                <img
+                  src={song.imageUrl}
+                  alt=""
+                  className={cn("h-11 w-11 shrink-0 object-cover", isArtist ? "rounded-full" : "rounded-lg")}
+                  loading="lazy"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium leading-5 text-white">{isArtist ? song.singer || song.artist : isAlbum ? song.album : song.title}</p>
+                  <p className="truncate text-[11px] leading-4 text-[#8b9aa0]">
+                    {isArtist ? "Artist" : isAlbum ? `Album · ${song.singer || song.artist}` : `Song · ${song.singer || song.artist}`}
+                  </p>
+                </div>
+                {isArtist || isAlbum ? (
+                  <ChevronRight className="mr-1 h-5 w-5 shrink-0 text-white/75" />
+                ) : (
+                  <>
+                    <span className="text-[11px] tabular-nums text-white/75">{song.duration ? `${Math.floor(song.duration / 60)}:${String(song.duration % 60).padStart(2, "0")}` : ""}</span>
+                    <button aria-label={`Play ${song.title}`} onClick={(e) => { e.stopPropagation(); selectSong(song); }} className="grid h-8 w-8 place-items-center rounded-full text-[#f4c327] opacity-0 transition group-hover:opacity-100 focus:opacity-100">
+                      <Play className="ml-0.5 h-4 w-4" fill="currentColor" />
+                    </button>
+                    <button aria-label={`More options for ${song.title}`} onClick={(e) => e.stopPropagation()} className="grid h-8 w-6 place-items-center text-[#f4c327]/75">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+                  </>
+                )}
+              </li>
+            );
+          })}
+
+          {q && visibleSongs.length === 0 && (
+            <li className="py-12 text-center text-sm text-white/55">
+              No matches for “{q}”. Try another search.
+            </li>
+          )}
+        </ul>
+
+        {!q && category === "Top Results" && results.length > 0 && (
+          <div className="mt-5 flex items-center gap-2 text-[11px] text-white/45">
+            <Disc3 className="h-3.5 w-3.5" /> Your music, all in one place
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
